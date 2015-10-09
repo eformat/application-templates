@@ -8,7 +8,7 @@
         "capacity": {
             "storage": "2Gi"
             },
-        "accessModes": [ "ReadWriteMany" ],
+        "accessModes": [ "ReadWriteOnce" ],
         "nfs": {
             "path": "/mnt/bigdisk/eap-app-mysql-pvol",
             "server": "192.168.0.172"
