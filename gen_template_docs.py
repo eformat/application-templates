@@ -10,25 +10,29 @@
 # Notes: NEEDS TO BE CLEANED UP
 
 import json
+import yaml
 import os
 import sys
 import re
+from collections import OrderedDict
 from ptemplate.template import Template
 
 GIT_REPO = "https://github.com/jboss-openshift/application-templates.git"
 REPO_NAME = "application-templates/"
 TEMPLATE_DOCS = "docs/"
-APPLICATION_DIRECTORIES = ("amq","eap","webserver","decisionserver","datagrid","sso")
-template_dirs = [ 'amq', 'eap', 'secrets', 'webserver', 'decisionserver', 'datagrid', 'sso']
+APPLICATION_DIRECTORIES = ("amq","eap","webserver","decisionserver","processserver","datagrid","datavirt","sso")
+template_dirs = [ 'amq', 'eap', 'secrets', 'webserver', 'decisionserver', 'processserver', 'datagrid', 'datavirt', 'sso']
 amq_ssl_desc = None
 
-LINKS =  {"jboss-eap64-openshift:1.2": "../../eap/eap-openshift{outfilesuffix}[`jboss-eap-6/eap64-openshift`]",
-          "jboss-eap64-openshift:1.3": "../../eap/eap-openshift{outfilesuffix}[`jboss-eap-6/eap64-openshift`]",
-          "jboss-webserver30-tomcat7-openshift:1.2": "../../webserver/tomcat7-openshift{outfilesuffix}[`jboss-webserver-3/webserver30-tomcat7-openshift`]",
-          "jboss-webserver30-tomcat8-openshift:1.2": "../../webserver/tomcat8-openshift{outfilesuffix}[`jboss-webserver-3/webserver30-tomcat8-openshift`]",
-          "jboss-decisionserver62-openshift:1.2": "../../decisionserver/decisionserver-openshift{outfilesuffix}[`jboss-decisionserver-6/decisionserver62-openshift`]",
-          "jboss-eap70-openshift:1.3": "../../eap/eap-openshift{outfilesuffix}[`jboss-eap-7/eap70-openshift`]",
-          "redhat-sso70-openshift:1.3-TP": "../../sso/sso-openshift{outfilesuffix}[`redhat-sso-7-tech-preview/sso70-openshift`]",
+LINKS =  {"jboss-eap64-openshift:1.7": "../../eap/eap-openshift{outfilesuffix}[`jboss-eap-6/eap64-openshift`]",
+          "jboss-eap70-openshift:1.7": "../../eap/eap-openshift{outfilesuffix}[`jboss-eap-7/eap70-openshift`]",
+          "jboss-eap71-openshift:1.1": "../../eap/eap-openshift{outfilesuffix}[`jboss-eap-7-tech-preview/eap71-openshift`]",
+          "jboss-webserver31-tomcat7-openshift:1.1": "../../webserver/tomcat7-openshift{outfilesuffix}[`jboss-webserver-3/webserver31-tomcat7-openshift`]",
+          "jboss-webserver31-tomcat8-openshift:1.1": "../../webserver/tomcat8-openshift{outfilesuffix}[`jboss-webserver-3/webserver31-tomcat8-openshift`]",
+          "jboss-decisionserver64-openshift:1.2": "../../decisionserver/decisionserver-openshift{outfilesuffix}[`jboss-decisionserver-6/decisionserver64-openshift`]",
+          "jboss-processserver64-openshift:1.2": "../../processserver/processserver-openshift{outfilesuffix}[`jboss-processserver-6/processserver64-openshift`]",
+          "jboss-datavirt63-openshift:1.4": "../../datavirt/datavirt-openshift{outfilesuffix}[`jboss-datavirt-6/datavirt63-openshift`]",
+          "redhat-sso71-openshift:1.3": "../../sso/sso-openshift{outfilesuffix}[`redhat-sso-7/sso71-openshift`]",
 }
 
 PARAMETER_VALUES = {"APPLICATION_DOMAIN": "secure-app.test.router.default.local", \
@@ -50,20 +54,23 @@ def generate_templates():
     for directory in template_dirs:
         if not os.path.isdir(directory):
             continue
-        for template in os.listdir(directory):
-            if template[-5:] != '.json':
+        for template in sorted(os.listdir(directory)):
+            if template[-5:] != '.json' and template[-5:] != '.yaml':
                 continue
             generate_template(os.path.join(directory, template))
 
 def generate_template(path):
     with open(path) as data_file:
-        data = json.load(data_file)
+        if path[-5:] == '.json':
+            data = json.load(data_file, object_pairs_hook=OrderedDict)
+            outfile = TEMPLATE_DOCS + re.sub('\.json$', '', path) + '.adoc'
+        else:
+            data = yaml.load(data_file)
+            outfile = TEMPLATE_DOCS + re.sub('\.yaml$', '', path) + '.adoc'
 
     if not 'labels' in data or not "template" in data["labels"]:
         sys.stderr.write("no template label for template %s, can't generate documentation\n"%path)
         return
-
-    outfile = TEMPLATE_DOCS + re.sub('\.json$', '', path) + '.adoc'
 
     outdir = os.path.dirname(outfile)
     if not os.path.exists(outdir):
@@ -142,7 +149,11 @@ def createTemplate(data, path):
             # our 'secrets' are always attached to a service account
             # only include the secrets section if we have defined serviceAccount(s)
             if len(serviceAccountName) > 0:
-                tdata['objects'][0]['secrets'] = [{ "templateabbrev": data['labels']['template'][0:3] }]
+                if re.match('^datavirt', path):
+                    tdata['objects'][0]['secrets'] = [{ "secretName": "datavirt-app-secret", "secretFile": "datavirt-app-secret.yaml" }]
+                else:
+                    secretName = [param["value"] for param in data["parameters"] if "value" in param and param["value"].endswith("-app-secret")]
+                    tdata['objects'][0]['secrets'] = [{ "secretName": secretName[0], "secretFile": secretName[0] + ".json" }]
 
         # currently the clustering section applies only to EAP templates
         if re.match('^eap', path):
@@ -208,15 +219,30 @@ def createObjectTable(data, tableKind):
    columns =[]
    for obj in data["objects"]:
       if obj["kind"] ==  'Service' and tableKind == 'Service':
-         columns = [obj["metadata"]["name"], str(obj["spec"]["ports"][0]["port"]), obj["metadata"]["annotations"]["description"] ]
+         addDescription=True
+         ports = obj["spec"]["ports"]
+         text += "\n." + str(len(ports)) + "+| `" + obj["metadata"]["name"] + "`"
+         for p in ports:
+            columns = ["port", "name"]
+            columns = [str(p[col]) if p.get(col) else "--" for col in columns]
+            text += buildRow(columns)
+            if addDescription:
+               text += "\n." + str(len(ports)) + "+| " + obj["metadata"]["annotations"]["description"]
+               addDescription=False
+         continue
       elif obj["kind"] ==  'Route' and tableKind == 'Route':
          if(obj["spec"].get("tls")):
             columns = [obj["id"], ("TLS "+ obj["spec"]["tls"]["termination"]), obj["spec"]["host"]]
          else:
             columns = [obj["id"], "none", obj["spec"]["host"]]
       elif obj["kind"] ==  'BuildConfig' and tableKind == 'BuildConfig':
-         s2i = obj["spec"]["strategy"]["sourceStrategy"]["from"]["name"]
-         columns = [s2i," link:" + LINKS[s2i], obj["spec"]["output"]["to"]["name"], ", ".join({x["type"] for x in obj["spec"]["triggers"] }) ]
+         if obj["spec"]["strategy"]["type"] == 'Source':
+            s2i = obj["spec"]["strategy"]["sourceStrategy"]["from"]["name"]
+            link = " link:" + LINKS[s2i]
+         elif obj["spec"]["strategy"]["type"] == 'Docker':
+            s2i = obj["spec"]["strategy"]["dockerStrategy"]["dockerfilePath"]
+            link = ""
+         columns = [s2i, link, obj["spec"]["output"]["to"]["name"], ", ".join([x["type"] for x in obj["spec"]["triggers"] ]) ]
       elif obj["kind"] ==  'PersistentVolumeClaim' and tableKind == 'PersistentVolumeClaim':
          columns = [obj["metadata"]["name"], obj["spec"]["accessModes"][0]]
       if(obj["kind"] == tableKind):
@@ -285,8 +311,10 @@ fullname = {
     "amq":       "JBoss A-MQ",
     "eap":       "JBoss EAP",
     "webserver": "JBoss Web Server",
-    "decisionserver": "JBoss BRMS Realtime Decision Server",
+    "decisionserver": "Red Hat JBoss BRMS decision server",
+    "processserver": "Red Hat JBoss BPM Suite intelligent process server",
     "datagrid": "JBoss Data Grid",
+    "datavirt": "Red Hat JBoss Data Virtualization",
     "sso": "Red Hat SSO",
 }
 
@@ -297,13 +325,13 @@ def generate_readme():
         # page header
         fh.write(open('./README.adoc.in').read())
 
-        for directory in template_dirs:
+        for directory in sorted(template_dirs):
             if not os.path.isdir(directory):
                 continue
             # section header
             fh.write('\n== %s\n\n' % fullname.get(directory, directory))
             # links
-            for template in [ os.path.splitext(x)[0] for x in os.listdir(directory) ]:
+            for template in [ os.path.splitext(x)[0] for x in sorted(os.listdir(directory)) ]:
                 # XXX: Hack for 1.3 release, which excludes processserver
                 if template != "processserver-app-secret":
                     fh.write("* link:./%s/%s.adoc[%s]\n" % (directory, template, template))
